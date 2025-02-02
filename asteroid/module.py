@@ -1,10 +1,8 @@
-
 import time
 import logging
 import queue
 import threading
 import mpd
-import pyowm
 import pydbus as dbus
 from asteroid import Asteroid, DBusEavesdropper, WeatherPredictions
 from gi.repository import GLib
@@ -136,28 +134,68 @@ class NotifyModule(Module):
         GLib.idle_add(self._notification_send)
 
 
-class OWMModule(Module):
+import subprocess
+from urllib.parse import quote_plus
 
-    defconfig = {"update_interval": 2 * 60 * 60 }
+import subprocess
+from urllib.parse import quote_plus
+
+class WeatherModule(Module):
+    
+    def __init__(self):
+        self.config = {"update_interval": 2 * 60 * 60}
+        
+        # Словарь для перевода эмодзи в числовые коды
+        self.weather_emojis = {
+            "🌞": 800,     # Sunny
+            "❄️": 602,     # Moderate snow
+            "☔️": 500,     # Light rain
+            "⛈": 501,      # Heavy rain
+            "⚡": 200       # Thunderstorm
+        }
 
     def register(self, app):
-        super(OWMModule, self).register(app)
+        super(WeatherModule, self).register(app)
         self._update_weather()
         GLib.timeout_add_seconds(self.config["update_interval"], self._update_weather)
 
     def _update_weather(self):
         try:
-            owm = pyowm.OWM(self.config["api_key"])
-            # TODO: Eventually, autodetecting the location would be nice
-            forecast = owm.daily_forecast(self.config["location"]).get_forecast()
-            preds = WeatherPredictions.from_owm(forecast)
-            self.asteroid.update_weather(preds)
-            self.logger.info("Weather update sent")
+            # Получаем температуру через curl
+            city_name = "Новгород"
+            encoded_city = quote_plus(city_name)  # Кодируем название города для URL
+            command = f'curl "https://wttr.in/{encoded_city}?format=%t"'
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            
+            if result.returncode == 0:
+                temperature_str = result.stdout.strip()  # Убираем лишние пробелы и символы новой строки
+                temperature_c = float(temperature_str[:-2])   # Преобразуем строку в число, удаляя последние два символа (°C)
+                
+                # Преобразуем значение температуры из Цельсия в Кельвины
+                temperature_k = temperature_c + 273.15
+                
+                # Создаем объект WeatherPredictions с полученными данными
+                weather_ids = [self.weather_emojis.get(emoji) for emoji in self.weather_emojis.keys()]
+                min_temp = [temperature_k] * len(weather_ids)  # Одинаковая минимальная температура для всех прогнозов
+                max_temp = [temperature_k] * len(weather_ids)  # Одинаковая максимальная температура для всех прогнозов
+                
+                predictions = WeatherPredictions(city_name)
+                for i in range(len(weather_ids)):
+                    predictions.append_prediction(weather_ids[i], min_temp[i], max_temp[i])
+                
+                # Обновляем погоду на устройстве
+                self.asteroid.update_weather(predictions)
+                self.logger.info(f"Weather update sent for {city_name}: {temperature_c:.1f}C ({temperature_k:.1f}K)")
+            else:
+                self.logger.error(f"Failed to get weather data for {city_name}")
         except Exception as e:
-            # We can't str the exception directly, because a bug in PyOWM python3
-            # support would lead to another exception
-            self.logger.error("Weather update failed with %s" % type(e))
-        return True
+            self.logger.exception(e)
+
+    def _convert_to_celsius(self, temp_k):
+        return temp_k - 273.15
+
+    def _convert_to_kelvin(self, temp_c):
+        return temp_c + 273.15
 
 
 class MPDModule(Module):
