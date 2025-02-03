@@ -1,5 +1,5 @@
 # AsteroidOSLinux
-AsteroidOS Linux control application
+Updated AsteroidOS Linux control application
 
 ## Prerequisites
   - pydbus
