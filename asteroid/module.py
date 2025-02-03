@@ -2,6 +2,7 @@ import time
 import logging
 import queue
 import threading
+import pyowm
 import mpd
 import pydbus as dbus
 from asteroid import Asteroid, DBusEavesdropper, WeatherPredictions
@@ -45,8 +46,6 @@ class TimeSyncModule(Module):
 
     def register(self, app):
         super(TimeSyncModule, self).register(app)
-        # We want to do this on startup, but as the dbus-is-blocking issues is
-        # not solved yet, be careful
         if self.asteroid.dev.connected:
             self._update_time()
 
@@ -134,68 +133,31 @@ class NotifyModule(Module):
         GLib.idle_add(self._notification_send)
 
 
-import subprocess
-from urllib.parse import quote_plus
+class OWMModule(Module):
 
-import subprocess
-from urllib.parse import quote_plus
-
-class WeatherModule(Module):
-    
-    def __init__(self):
-        self.config = {"update_interval": 2 * 60 * 60}
-        
-        # Словарь для перевода эмодзи в числовые коды
-        self.weather_emojis = {
-            "🌞": 800,     # Sunny
-            "❄️": 602,     # Moderate snow
-            "☔️": 500,     # Light rain
-            "⛈": 501,      # Heavy rain
-            "⚡": 200       # Thunderstorm
-        }
+    defconfig = {"update_interval": 2 * 60 * 60}
 
     def register(self, app):
-        super(WeatherModule, self).register(app)
-        self._update_weather()
+        super(OWMModule, self).register(app)
+        self.api_key = self.config.get('api_key', '')
+        self.city = self.config.get('city', '')
+        self._update_weather()#
         GLib.timeout_add_seconds(self.config["update_interval"], self._update_weather)
 
     def _update_weather(self):
-        try:
-            # Получаем температуру через curl
-            city_name = "Новгород"
-            encoded_city = quote_plus(city_name)  # Кодируем название города для URL
-            command = f'curl "https://wttr.in/{encoded_city}?format=%t"'
-            result = subprocess.run(command, shell=True, capture_output=True, text=True)
-            
-            if result.returncode == 0:
-                temperature_str = result.stdout.strip()  # Убираем лишние пробелы и символы новой строки
-                temperature_c = float(temperature_str[:-2])   # Преобразуем строку в число, удаляя последние два символа (°C)
-                
-                # Преобразуем значение температуры из Цельсия в Кельвины
-                temperature_k = temperature_c + 273.15
-                
-                # Создаем объект WeatherPredictions с полученными данными
-                weather_ids = [self.weather_emojis.get(emoji) for emoji in self.weather_emojis.keys()]
-                min_temp = [temperature_k] * len(weather_ids)  # Одинаковая минимальная температура для всех прогнозов
-                max_temp = [temperature_k] * len(weather_ids)  # Одинаковая максимальная температура для всех прогнозов
-                
-                predictions = WeatherPredictions(city_name)
-                for i in range(len(weather_ids)):
-                    predictions.append_prediction(weather_ids[i], min_temp[i], max_temp[i])
-                
-                # Обновляем погоду на устройстве
-                self.asteroid.update_weather(predictions)
-                self.logger.info(f"Weather update sent for {city_name}: {temperature_c:.1f}C ({temperature_k:.1f}K)")
-            else:
-                self.logger.error(f"Failed to get weather data for {city_name}")
-        except Exception as e:
-            self.logger.exception(e)
+        from .wt import get_forecast_data
 
-    def _convert_to_celsius(self, temp_k):
-        return temp_k - 273.15
+        weather_ids, min_temp, max_temp = get_forecast_data(self.api_key, self.city)
+        
+        predictions = WeatherPredictions(self.city)
+        for i in range(len(weather_ids)):
+            predictions.append_prediction(weather_ids[i], min_temp[i], max_temp[i])
 
-    def _convert_to_kelvin(self, temp_c):
-        return temp_c + 273.15
+        for i in range(5 - len(weather_ids)):
+            predictions.append_prediction(800, 273.15, 293.15)  
+
+        self.asteroid.update_weather(predictions)
+        self.logger.info("Weather update sent")
 
 
 class MPDModule(Module):
@@ -229,7 +191,7 @@ class MPDModule(Module):
     def _mpd_connection_error_cb(self, src=None, cond=None):
         self.logger.warn("MPD connection error, scheduling reconnect")
         GLib.timeout_add_seconds(self.config["reconnect_period"],
-                                 self._mpd_reconnect)
+                               self._mpd_reconnect)
         return False
 
     def _mpd_reconnect(self):
