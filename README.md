@@ -26,7 +26,7 @@ Switch to the directory:
 cd AsteroidOSLinux/
 ```
 
-Make sure your watch is already connected via bluetooth and run the example script:
+Make sure your watch is already connected via bluetooth set up your example.py and run the example script:
 
 ```
 ./example.py
